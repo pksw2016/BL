@@ -136,7 +136,8 @@ Pi = 2*np.dot(np.dot(lmb, C), W)                                # implied equib 
 
 # Determine views to the equilibrium returns and prepare views (Q) and link (P) matrices
 views = [
-        ('AAPL', '>', 'GOOG', 0.023)
+        ('MSFT', '>', 'GE', 0.02),
+        ('AAPL', '<', 'JNJ', 0.02)
         ]
 
 
@@ -218,10 +219,10 @@ def summarize(Pi,BL_rtns,BL_implied_weights,BL_constrained_weights,df):
     return(df)
 
 df = summarize(Pi,BL_rtns,BL_implied_weights,BL_constrained_weights,df)
-print('returns are per month')
+print('Returns are per month')
 print(df)
 
 
 portfolio_return = np.dot(df['BL implied uncons weights'],df['BL implied returns %'])
 
-print('\n monthly portfolio return is {}%'.format(portfolio_return.round(3)))
+print('\n Monthly portfolio return is {}%'.format(portfolio_return.round(3)))

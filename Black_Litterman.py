@@ -11,15 +11,17 @@ from numpy import matrix, array, zeros, empty, sqrt, ones, dot, append, mean, co
 from numpy.linalg import inv, pinv
 #from pylab import *
 #from structures.quote import QuoteSeries
-import scipy.optimize
+import scipy.optimize as sco
 import random
 
 '''
 ##########################################################
 
+all data is in the form of numbers/ month
+
 formula used 
 
-E(R) = [(τ C)-1 + PT ΩP]-1 [(τ C)-1 Π + PT ΩQ]
+E(R) = [(τ C)-1 + PT ΩP]-1 [(τ C)-1 Pi + PT ΩQ]
 
 wherer E(R) is the expected excess return
 τ is a scalar, I have used 1
@@ -27,6 +29,7 @@ C is the variance covariance matrix
 P is matrix identifying which assets you have view on
 Ω is uncertainty
 Q is view on expected return
+Pi is implied equlibrium excess return
 
 the view used is MSFT outperforming GE by 2%
 AAPL underperforming JNJ by 2%
@@ -54,10 +57,10 @@ def load_data_net():
 def assets_meanvar(names, prices, caps):
     weights = array(caps) / sum(caps)  # create weights
 
-    rtns = prices.pct_change()
-    expreturns = rtns.mean()*252 #annulised
+    rtns = prices.pct_change().dropna()
+    expreturns = rtns.mean()*1 #annulised
 
-    covars = rtns.cov()*252
+    covars = rtns.cov()*1
 
     return names, weights, expreturns, covars
 
@@ -71,9 +74,9 @@ def print_assets(names, W,R,C):
         df.columns = ['Stocks', 'Mkt eq Weights']
         df.set_index('Stocks', inplace=True)
         df = pd.concat([df, r], axis=1)
-        df.columns = ['Mkt eq Weights', 'Hist Returns']
-        df[['Mkt eq Weights', 'Hist Returns']] = df[['Mkt eq Weights', 'Hist Returns']].apply(lambda x: x * 100)
-        df =df[['Hist Returns','Mkt eq Weights']]
+        df.columns = ['Mkt eq Weights', 'Hist Returns %']
+        df[['Hist Returns %']] = df[['Hist Returns %']].apply(lambda x: x * 100)
+        df =df[['Hist Returns %','Mkt eq Weights']]
         return df
 
 
@@ -86,7 +89,7 @@ def port_mean_var(W,R,C):
 # given the pairs of assets, prepare the views and link matrices. This function is created just for users' convenience
 def prepare_views_and_link_matrix(names, views):
         r, c = len(views), len(names)
-        Q = [views[i][3] for i in range(r)]     # view matrix
+        Q = [views[i][3] for i in range(r)]                     # view matrix
         P = zeros([r, c])                                       # link matrix
         nameToIndex = dict()
         for i, n in enumerate(names):
@@ -100,32 +103,40 @@ def prepare_views_and_link_matrix(names, views):
 
 # Load names, prices, capitalizations from the data source
 names, prices, caps = load_data_net()
-
+prices = prices.resample('M').last()
 
 # Estimate assets's expected return and covariances
 names, W, R, C = assets_meanvar(names, prices, caps)
-rf = .015       # Risk-free rate
+rf = .0213       # Risk-free rate
 ann_excess_rtns = R - rf
 
 
 # Print historic data
 df = print_assets(names, W, R, C)
-print(df)
+#print(df)
 
 # Calculate portfolio historical return and variance
 mean, var = port_mean_var(W, R, C)
 
 
+#extract data for SPX (i.e. market)
+df_mkt_m = pd.read_csv('data_new.csv',index_col='Date',parse_dates=True)[['^GSPC']].resample('M').last().pct_change().dropna()
+mean_mkt = df_mkt_m.mean()
+rf_m = rf/12
+var_mkt = np.var(df_mkt_m)
+
+
 # Black-litterman reverse optimization
-lmb = (mean - rf) / var                         # Calculate return/risk trade-off
-Pi = 2*np.dot(np.dot(lmb, C), W)                  #implied equib excess return
+lmb = (mean_mkt - rf_m) / (2 * var_mkt)                         # Calculate return/risk trade-off
+lmb = np.asscalar(np.array(lmb))
+#lmb = 1.5
+Pi = 2*np.dot(np.dot(lmb, C), W)                                # implied equib excess return
 
 
 
 # Determine views to the equilibrium returns and prepare views (Q) and link (P) matrices
 views = [
-        ('MSFT', '>', 'GE', 0.02),
-        ('AAPL', '<', 'JNJ', 0.02)
+        ('AAPL', '>', 'GOOG', 0.023)
         ]
 
 
@@ -155,21 +166,62 @@ Z = np.dot(inv(C),BL_rtns)
 BL_implied_weights = Z/sum(Z)
 
 
-def summarize(Pi,BL_rtns,BL_implied_weights,df):
+
+#Build a constrained asset allocation
+
+
+def run_constrianed_asset_allocation(weights,rets,cvm):
+
+    iweights = weights
+
+    def get_ret_vol_sr(iweights):
+        ret_o = np.sum(iweights*rets)
+        vol_o = np.sqrt(np.dot(iweights,np.dot(cvm,iweights.T)))
+        sr_o = ret_o/vol_o
+        return np.array([ret_o,vol_o,sr_o])
+
+    def neg_sharpe(iweights):
+        return get_ret_vol_sr(iweights)[2]*-1
+
+    def check_sum(iweights):
+        return np.sum(iweights)-1
+
+    cons = ({'type': 'eq', 'fun': check_sum})
+    bounds = ((.05, 1), (.05, 1), (.05, 1), (.05, 1), (.05, 1), (.05, 1), (.05, 1), (.05, 1), (.05, 1))
+
+    # Sequential Least SQuares Programming (SLSQP).
+    opt_results = sco.minimize(neg_sharpe, iweights, method='SLSQP', bounds=bounds, constraints=cons)
+    opt_sr=opt_results.fun*-1
+    opt_wts=opt_results.x*1
+    opt_ret=np.sum(opt_wts*rets)
+    opt_vol=np.sqrt(np.dot(opt_wts.T,np.dot(cvm,opt_wts)))
+
+    return opt_wts
+
+BL_constrained_weights = run_constrianed_asset_allocation(BL_implied_weights,BL_rtns,C)
+
+
+
+
+def summarize(Pi,BL_rtns,BL_implied_weights,BL_constrained_weights,df):
     pass
-    Pi = pd.DataFrame(Pi) ; BL_rtns = pd.DataFrame(BL_rtns) ; BL_weights = pd.DataFrame(BL_implied_weights)
-    zz = pd.concat([Pi,BL_rtns,BL_weights],axis=1)
+    Pi = pd.DataFrame(Pi) ; BL_rtns = pd.DataFrame(BL_rtns) ; BL_weights = pd.DataFrame(BL_implied_weights) ; BL_cons_weights = pd.DataFrame(BL_constrained_weights)
+
+    zz = pd.concat([Pi,BL_rtns,BL_weights,BL_cons_weights],axis=1)
     zz['Stocks'] = names
     zz.set_index('Stocks',inplace=True)
-    zz.columns = ['Market eq returns','BL implied returns','BL implied weights']
-    zz[['Market eq returns','BL implied returns']] = zz[['Market eq returns','BL implied returns']].apply(lambda x: x*100)
+    zz.columns = ['Market eq returns %','BL implied returns %','BL implied uncons weights','BL implied cons weights']
+    zz[['Market eq returns %','BL implied returns %']] = zz[['Market eq returns %','BL implied returns %']].apply(lambda x: x*100)
     df = pd.concat([df,zz],axis=1)
-    df['BL implied weights'] = df['BL implied weights'].apply(lambda x: x * 100)
-    df = df.round(2)
+    df[['BL implied uncons weights','BL implied cons weights']] = df[['BL implied uncons weights','BL implied cons weights']].apply(lambda x: x * 1)
+    df = df.round(4)
     return(df)
 
-df = summarize(Pi,BL_rtns,BL_implied_weights,df)
+df = summarize(Pi,BL_rtns,BL_implied_weights,BL_constrained_weights,df)
+print('returns are per month')
 print(df)
 
 
-portfolio_return = np.dot(df['BL implied weights'],df['BL implied returns'])
+portfolio_return = np.dot(df['BL implied uncons weights'],df['BL implied returns %'])
+
+print('\n monthly portfolio return is {}%'.format(portfolio_return.round(3)))

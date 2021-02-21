@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 #import pandas_datareader.data as web
 import matplotlib
-matplotlib.use('TkAgg') # Remove this to compare with MacOSX backend
+matplotlib.use('Qt5Agg') # Remove this to compare with MacOSX backend
 import matplotlib.pyplot as plt
 import datetime
 
